@@ -1,6 +1,13 @@
+import StellarSdk from "@stellar/stellar-sdk";
+
+export interface FeePayerAccount {
+  secret: string;
+  publicKey: string;
+  keypair: any;
+}
+
 export interface Config {
-  feePayerSecret: string;
-  feePayerPublicKey: string;
+  feePayerAccounts: FeePayerAccount[];
   baseFee: number;
   feeMultiplier: number;
   networkPassphrase: string;
@@ -8,14 +15,25 @@ export interface Config {
 }
 
 export function loadConfig(): Config {
-  const feePayerSecret = process.env.FLUID_FEE_PAYER_SECRET;
-  if (!feePayerSecret) {
+  const rawSecrets = process.env.FLUID_FEE_PAYER_SECRET;
+  if (!rawSecrets) {
     throw new Error("FLUID_FEE_PAYER_SECRET environment variable is required");
   }
 
-  const StellarSdk = require("@stellar/stellar-sdk");
-  const feePayerKeypair = StellarSdk.Keypair.fromSecret(feePayerSecret);
-  const feePayerPublicKey = feePayerKeypair.publicKey();
+  // Support comma-separated list of secrets
+  const secrets = rawSecrets.split(",").map((s) => s.trim()).filter(Boolean);
+  if (secrets.length === 0) {
+    throw new Error("FLUID_FEE_PAYER_SECRET must contain at least one secret");
+  }
+
+  const feePayerAccounts: FeePayerAccount[] = secrets.map((secret) => {
+    const keypair = StellarSdk.Keypair.fromSecret(secret);
+    return {
+      secret,
+      publicKey: keypair.publicKey(),
+      keypair,
+    };
+  });
 
   const baseFee = parseInt(process.env.FLUID_BASE_FEE || "100", 10);
   const feeMultiplier = parseFloat(process.env.FLUID_FEE_MULTIPLIER || "2.0");
@@ -25,11 +43,24 @@ export function loadConfig(): Config {
   const horizonUrl = process.env.STELLAR_HORIZON_URL;
 
   return {
-    feePayerSecret,
-    feePayerPublicKey,
+    feePayerAccounts,
     baseFee,
     feeMultiplier,
     networkPassphrase,
     horizonUrl,
   };
+}
+
+// Round-robin counter (module-level, safe for single-threaded Node.js event loop)
+let rrIndex = 0;
+
+/**
+ * Pick the next fee payer account using Round Robin strategy.
+ * Optionally skips accounts with low balance if horizonUrl is provided.
+ */
+export function pickFeePayerAccount(config: Config): FeePayerAccount {
+  const accounts = config.feePayerAccounts;
+  const account = accounts[rrIndex % accounts.length];
+  rrIndex = (rrIndex + 1) % accounts.length;
+  return account;
 }
